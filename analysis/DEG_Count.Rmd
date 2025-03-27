@@ -1,0 +1,108 @@
+---
+title: "sig deg count"
+output: html_document
+date: "2025-02-04"
+---
+
+```{r}
+library(tidyverse)
+library(data.table)
+```
+
+```{r}
+
+analysis_date <- "20250130"
+system2(command = "mkdir", args = 
+          c(paste("../results/", analysis_date, "/gsea/", sep=""),
+            paste("../results/", analysis_date, "/gsea/webgestalt_comparisons/", sep="")))
+output_path <- paste("../results/", analysis_date, "/gsea/webgestalt_comparisons/", sep="")
+
+ctrl_stable_dis_path <- paste("../results/",
+                       analysis_date,
+                       "/control-stable_disease/",
+                       analysis_date,
+                       "_Fureylab_Mona-Lupus_DESeq_SIGIFICANT_results_control-stable_disease_padj0.05_kval1.txt",
+                       sep="")
+
+ctrl_all_ESRD_path <- paste("../results/",
+                       analysis_date,
+                       "/control-All_ESRD/",
+                       analysis_date,
+                       "_Fureylab_Mona-Lupus_DESeq_SIGIFICANT_results_control-All_ESRD_padj0.05_kval1.txt",
+                       sep="")
+
+ctrl_dis_path <- paste("../results/",
+                       analysis_date,
+                       "/control-disease/",
+                       analysis_date,
+                       "_Fureylab_Mona-Lupus_DESeq_SIGIFICANT_results_control-disease_padj0.05_kval1.txt",
+                       sep="")
+
+stable_disease_all_ESRD_path <- paste("../results/",
+                                      analysis_date,
+                                      "/stable_disease-All_ESRD/",
+                                      analysis_date,
+                                      "_Fureylab_Mona-Lupus_DESeq_SIGIFICANT_results_stable_disease-All_ESRD_padj0.05_kval1.txt",
+                                      sep="")
+
+
+ctrl_stable_dis_df <- fread(ctrl_stable_dis_path, data.table = F, header = T)
+ctrl_all_ESRD_df <- fread(ctrl_all_ESRD_path, data.table = F, header = T)
+ctrl_dis_df <- fread(ctrl_dis_path, data.table = F, header = T)
+stable_disease_all_ESRD_df <- fread(stable_disease_all_ESRD_path, data.table = F, header = T)
+```
+
+
+
+```{r}
+count_DEGs <- function(df) {
+  contrast <- deparse(substitute(df)) # variable name to string
+  
+  positive_count_df <- df %>%
+    dplyr::filter(log2FoldChange > 0) 
+  positive_count <- positive_count_df %>%
+    nrow()
+  
+  positive_non_coding_count <- sum(is.na(positive_count_df$symbol))
+  
+  positive_coding_count <- positive_count - positive_non_coding_count
+  
+  #####
+  
+  negative_count_df <- df %>%
+    dplyr::filter(log2FoldChange < 0) 
+  negative_count <- negative_count_df %>%
+    nrow()
+  
+  negative_non_coding_count <-  sum(is.na(negative_count_df$symbol))
+  negative_coding_count <- negative_count - negative_non_coding_count
+  
+  out_string <- paste(contrast, 
+                      "total positive DEG count:", positive_count,
+                      "positive coding DEG count:", positive_coding_count, 
+                      "positive non-coding DEG count:", positive_non_coding_count,
+                      "percent positive genes that are protein coding:", (positive_coding_count/positive_count)*100,
+                      "total negative DEG count:", negative_count,
+                      "negative coding DEG count:", negative_coding_count, 
+                      "negative non-coding DEG count:", negative_non_coding_count,
+                      "percent negative genes that are protein coding:", (negative_coding_count/negative_count)*100,
+                      sep=" ")
+  
+  return(out_string)
+  
+}
+```
+
+```{r}
+count_DEGs(ctrl_stable_dis_df)
+count_DEGs(ctrl_all_ESRD_df)
+count_DEGs(ctrl_dis_df)
+count_DEGs(stable_disease_all_ESRD_df)
+# 
+# [1] "ctrl_stable_dis_df positive DEG count: 6201 & negative DEG count: 5655"
+# [1] "ctrl_all_ESRD_df positive DEG count: 6703 & negative DEG count: 6709"
+# [1] "ctrl_dis_df positive DEG count: 7069 & negative DEG count: 6645"
+# [1] "stable_disease_all_ESRD_df positive DEG count: 7 & negative DEG count: 28"
+```
+
+

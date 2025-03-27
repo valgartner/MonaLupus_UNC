@@ -1,0 +1,140 @@
+---
+title: "query DEGs"
+output: html_document
+date: "2025-02-04"
+---
+
+```{r}
+library(data.table)
+library(tidyverse)
+
+analysis_date <- "20250310"
+```
+
+
+```{r}
+ctrl_stable_dis_path <- paste("../results/",
+                       analysis_date,
+                       "/control-stable_disease/",
+                       analysis_date,
+                       "_Fureylab_Mona-Lupus_DESeq_FULL_results_control-stable_disease_kval1.txt",
+                       sep="")
+
+ctrl_all_ESRD_path <- paste("../results/",
+                       analysis_date,
+                       "/control-All_ESRD/",
+                       analysis_date,
+                       "_Fureylab_Mona-Lupus_DESeq_FULL_results_control-All_ESRD_kval1.txt",
+                       sep="")
+
+ctrl_dis_path <- paste("../results/",
+                       analysis_date,
+                       "/control-disease/",
+                       analysis_date,
+                       "_Fureylab_Mona-Lupus_DESeq_FULL_results_control-disease_kval1.txt",
+                       sep="")
+
+stable_disease_all_ESRD_path <- paste("../results/",
+                                      analysis_date,
+                                      "/stable_disease-All_ESRD/",
+                                      analysis_date,
+                                      "_Fureylab_Mona-Lupus_DESeq_FULL_results_stable_disease-All_ESRD_kval1.txt",
+                                      sep="")
+
+
+ctrl_stable_dis_df <- fread(ctrl_stable_dis_path, data.table = F, header = T)
+ctrl_all_ESRD_df <- fread(ctrl_all_ESRD_path, data.table = F, header = T)
+ctrl_dis_df <- fread(ctrl_dis_path, data.table = F, header = T)
+stable_disease_all_ESRD_df <- fread(stable_disease_all_ESRD_path, data.table = F, header = T)
+```
+
+
+
+```{r}
+shehzad_genes <- c("TREM2", "SPP1", "SIGLEC1", "FABP5")
+contrast_list <- list(ctrl_stable_dis_df, 
+                      ctrl_all_ESRD_df,
+                      ctrl_dis_df,
+                      stable_disease_all_ESRD_df)
+
+
+# initialize empty dataframe
+shehzad_genes_df <- data.frame(contrast=character(),
+                               log2FoldChange=numeric(), 
+                               padj=numeric(),
+                               baseMean=numeric(),
+                               stringsAsFactors=FALSE)
+
+
+for (i in 1:length(contrast_list)) {
+  gene_list_df <- contrast_list[[i]] %>%
+    dplyr::filter(symbol %in% shehzad_genes) %>%
+    dplyr::select(!c(ENSEMBL, lfcSE, pvalue, stat)) %>%
+    dplyr::select(symbol, log2FoldChange, padj, baseMean)
+
+  if (nrow(gene_list_df > 0)) {
+    contrast_names <- c("ctrl_stable_dis_df", 
+                      "ctrl_all_ESRD_df",
+                      "ctrl_dis_df",
+                      "stable_disease_all_ESRD_df")
+      gene_list_df["contrast"] = contrast_names[[i]]
+      shehzad_genes_df <- rbind(shehzad_genes_df, gene_list_df)
+    }
+}
+
+
+```
+
+
+
+```{r}
+lymph_genes <- c("B2M", "C3", "CD19", "CD1C", "CD1D", "CD200", "CD200R1", "CD22", "CD226", "CD247", "CD300A", "CD300C", "CD300E",
+ "CD300LB", "CD300LF", "CD33", "CD34", "CD3D", "CD3E", "CD40", "CD8A", "CD8B", "CD96", "CLEC2B", "CLEC2D", "COL1A1",
+ "COL1A2", "COL3A1", "CRTAM", "FCGR1A", "FCGR2B", "FCGR3A", "HCST", "HLA-A", "HLA-B", "HLA-C", "HLA-F", "IFITM1", "ITGA4",  
+ "ITGAL", "ITGB2", "ITGB7", "JAML", "KLRB1", "KLRK1", "LAIR1", "LILRA1", "LILRA2", "LILRA4", "LILRB1", "LILRB2", "LILRB4",
+ "LILRB5", "MICB", "NCR1", "NPDC1", "OSCAR", "PILRB", "SELL", "SH2D1A", "SIGLEC1", "SIGLEC10", "SIGLEC11", "SIGLEC5", "SIGLEC6",
+ "SIGLEC7", "SIGLEC9", "SLAMF6", "SLAMF7", "TREM2", "TREML1", "TREML2", "TYROBP")
+
+
+ctrl_dis_lymph_df <- ctrl_dis_df %>%
+  dplyr::filter(symbol %in% lymph_genes) %>%
+  dplyr::select(!c(ENSEMBL, lfcSE, pvalue, stat)) %>%
+  dplyr::select(symbol, log2FoldChange, padj, baseMean)
+
+
+# ctrl_dis_out_path <- paste("../results/",
+#                                       analysis_date,
+#                                       "/control-disease/",
+#                                       analysis_date,
+#                                       "_control-disease_Immunoregulatory_interactions_between_a_Lymphoid_and_a_non-Lymphoid_cell_GENES.txt",
+#                                       sep="")
+
+#fwrite(ctrl_stable_lymph_df, file = ctrl_dis_out_path, col.names = T, row.names = F)
+
+```
+
+
+
+```{r}
+interferon_genes <- c("ADAR", "BST2", "EIF2AK2", "GBP2", "HLA-A", "HLA-B", "HLA-C", "HLA-F", "IFI27", "IFI35", "IFI6", "IFIT1", "IFIT2", "IFIT3", "IFIT5", "IFITM1", "IFITM3", "IFNAR2", "IRF2", "IRF4", "IRF5", "IRF7", "IRF8", "IRF9", "ISG15", "MX1", "MX2", "OAS1", "OAS2", "OAS3", "PSMB8", "PTPN6", "RNASEL", "RSAD2", "SAMHD1", "STAT1", "STAT2", "USP18", "XAF1")
+
+
+ctrl_dis_IFN_df <- ctrl_dis_df %>%
+  dplyr::filter(symbol %in% interferon_genes) %>%
+  dplyr::select(!c(ENSEMBL, lfcSE, pvalue, stat)) %>%
+  dplyr::select(symbol, log2FoldChange, padj, baseMean)
+
+
+# ctrl_dis_IFN_out_path <- paste("../results/",
+#                                       analysis_date,
+#                                       "/control-disease/",
+#                                       analysis_date,
+#                                       "_control-disease_interferon_alpha_beta_signaling_GENES.txt",
+#                                       sep="")
+
+#fwrite(ctrl_dis_IFN_df, file = ctrl_dis_IFN_out_path, col.names = T, row.names = F)
+```
+
+
+
+

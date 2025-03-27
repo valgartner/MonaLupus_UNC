@@ -1,0 +1,1016 @@
+---
+title: "Mona Lupus Differential Expression Analysis"
+output: html_document
+date: "2025-03-10"
+author: "Val Gartner"
+---
+
+Set up
+```{r}
+#load libraries
+suppressMessages(library(tidyverse))
+suppressMessages(library(AnnotationDbi))
+suppressMessages(library(org.Hs.eg.db))
+suppressMessages(library(data.table))
+suppressMessages(library(DESeq2))
+suppressMessages(library(RUVSeq))
+suppressMessages(library(vsn))
+suppressMessages(library(edgeR))
+suppressMessages(library(dendextend))
+suppressMessages(library(matrixStats))
+suppressMessages(library(corrplot))
+suppressMessages(library(pheatmap))
+suppressMessages(library(plotly))
+suppressMessages(library(forcats))
+suppressMessages(library(cowplot))
+suppressMessages(library(svglite))
+suppressMessages(library(EnhancedVolcano))
+suppressMessages(library(data.table))
+suppressMessages(library(ggpmisc))
+suppressMessages(library(assertthat))
+
+# today's date - for saving output files
+today <- format(Sys.Date(), format = "%Y%m%d")
+
+# color blind friendly pallete
+cbPalette <- c("#56B4E9", "#E69F00", "#999999", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+# make directories and subdirectories for outputs
+system2(command = "mkdir",
+        args    = c("../results/",
+                    paste("../results/", today, sep=""),
+                    # contrasts
+                    paste("../results/", today, "/control-stable_disease", sep=""),
+                    paste("../results/", today, "/control-All_ESRD", sep=""),
+                    paste("../results/", today, "/control-disease", sep=""),
+                    paste("../results/", today, "/stable_disease-All_ESRD", sep=""),
+                    # output files for enrichr analysis
+                    paste("../results/", today, "/control-stable_disease/enrichr/", sep=""),
+                    paste("../results/", today, "/control-All_ESRD/enrichr/", sep=""),
+                    paste("../results/", today, "/control-disease/enrichr/", sep=""),
+                    paste("../results/", today, "/stable_disease-All_ESRD/enrichr/", sep=""),
+                    # output files for gsea with Web Gestalt
+                    paste("../results/", today, "/control-stable_disease/gsea/", sep=""),
+                    paste("../results/", today, "/control-All_ESRD/gsea/", sep=""),
+                    paste("../results/", today, "/control-disease/gsea/", sep=""),
+                    paste("../results/", today, "/stable_disease-All_ESRD/gsea/", sep="")
+                    )
+                    )
+```
+**Part 1: setup**
+
+
+Functions   
+```{r}
+### swap sign of stat column if LFC is negative
+apply_lfc_sign <- function(df) {
+  # only change the sign if the stat column doesn't already have a sign
+  # Results generated using the Wald test don't need to change sign
+  if (any(df$stat < 0)){ # Wald test results should have values <0
+  return(df)
+  } else { # for LRT, use the sign from the LFC column to make the stat column reflect up vs down
+    df <- df %>%
+    dplyr::mutate(stat = 
+                    case_when(
+                      log2FoldChange > 0 ~ stat,
+                      log2FoldChange < 0 ~  stat * -1
+                    ))
+    return(df)
+  }
+
+}
+
+### Add gene symbol to DE results, convert to df, and write out full and significant results
+write_full_results <- function(res_obj, CONTRAST, REF, disease, padj_val, kval) {
+  # convert Ensembl ID to gene symbol
+  ens.str <- substr(rownames(res_obj), 1, 18)
+  ens.str <- gsub("\\..*","",ens.str)
+  
+  res_obj$symbol <- mapIds(org.Hs.eg.db,
+                       keys=ens.str,
+                       column=c("SYMBOL"),
+                       keytype="ENSEMBL",
+                       multiVals="first")
+  
+  # reorder dataframe based on lowest padj value
+  resOrdered <- res_obj[order(res_obj$padj),]
+  res_df <- as.data.frame(resOrdered)
+  
+  # add sign to stat column based on lfc value
+  res_df <- apply_lfc_sign(res_df)
+  
+  # change rownames to column and add header
+  res_df <- setDT(res_df, keep.rownames = "ENSEMBL")[] 
+  
+  # keep only significant results
+  padj_res_df <- res_df %>%
+    dplyr::filter(padj < padj_val)
+  
+  # write out DE results - first the full DE table (including insignificant genes)
+  write.table(res_df, file=paste("../results/", today, "/",CONTRAST, "/", today, 
+                                 "_Fureylab_Mona-Lupus_DESeq_FULL_results_", REF, "-", disease, 
+                                 "_kval", kval, ".txt",sep=""), 
+              sep="\t", quote=FALSE, row.names=F)
+  # write out DE results - significantly differentially expressed genes
+  write.table(padj_res_df, file=paste("../results/", today, "/",CONTRAST, "/", today, 
+                                      "_Fureylab_Mona-Lupus_DESeq_SIGIFICANT_results_", REF, "-", disease,  
+                                      "_padj", padj_val, "_kval", kval, ".txt",sep=""), 
+              sep="\t", quote=FALSE, row.names=F)
+  
+  # create list to return both dfs
+  df_list <- list(res_df, padj_res_df)
+}
+
+
+# function to write out gsea files for Web Gestalt and gene symobl lists for enrichr
+write_enrichr_gsea_files <- function(df, padj_df, CONTRAST, REF, disease, padj_val, kval) {
+  
+  # up vs downregulated significant DEG for enrichr
+  # upregulated genes
+  padj_pos_lfc_df <- padj_df %>%
+    dplyr::filter(log2FoldChange > 0)
+
+   write.table(padj_pos_lfc_df, 
+               file=paste("../results/", today, "/",CONTRAST, "/enrichr/", 
+                          today, "_Fureylab_Mona-Lupus_DESeq_SIGIFICANT_results_POSITIVE-L2FC_", 
+                          REF, "-", disease, "_kval", kval, "_padj", padj_val, ".txt",sep=""), 
+               sep="\t", 
+               quote=FALSE)
+   
+   
+  padj_pos_lfc_symbols <- padj_pos_lfc_df %>%
+      dplyr::select(symbol) %>%
+      na.omit()
+    write.table(padj_pos_lfc_symbols, 
+               file=paste("../results/", today, "/",CONTRAST, "/enrichr/", 
+                          today, "_Fureylab_Mona-Lupus_DESeq_SIGIFICANT_results_POSITIVE-L2FC_", 
+                          REF, "-", disease, "_kval", kval, "_padj", padj_val, "_symbols.txt",sep=""), 
+               sep="\t", 
+               quote=FALSE,
+               row.names = F,
+               col.names = F)
+
+  # downregulated genes
+  padj_neg_lfc_df <- padj_df %>%
+    dplyr::filter(log2FoldChange < 0)
+   write.table(padj_neg_lfc_df, 
+               file=paste("../results/", today, "/",CONTRAST, "/enrichr/", 
+                          today, "_Fureylab_Mona-Lupus_DESeq_SIGIFICANT_results_NEGATIVE-L2FC_", 
+                          REF, "-", disease, "_kval", kval, "_padj", padj_val, ".txt",sep=""), 
+               sep="\t", 
+               quote=FALSE)
+
+    padj_neg_lfc_symbols <- padj_neg_lfc_df %>%
+      dplyr::select(symbol) %>%
+      na.omit()
+    write.table(padj_neg_lfc_symbols, 
+               file=paste("../results/", today, "/",CONTRAST, "/enrichr/", 
+                          today, "_Fureylab_Mona-Lupus_DESeq_SIGIFICANT_results_NEGATIVE-L2FC_", 
+                          REF, "-", disease, "_kval", kval, "_padj", padj_val, "_symbols.txt",sep=""), 
+               sep="\t", 
+               quote=FALSE,
+               row.names = F,
+               col.names = F)
+  
+    
+  #### GSEA .rnk files - needs significant & insignificant genes
+  padj_rank <- df %>%
+  dplyr::select(symbol, stat) %>%
+  na.omit()
+    
+    write.table(padj_rank, 
+               file=paste("../results/", today, "/",CONTRAST, "/gsea/", 
+                          today, "_Fureylab_Mona-Lupus_DESeq_", REF, "-", disease, 
+                          "_kval", kval, "_padj",  padj_val, ".rnk",sep=""), 
+               sep="\t", 
+               quote=FALSE,
+               row.names = F,
+               col.names = F)
+    
+}
+
+
+```
+
+Read in data
+```{r}
+### counts
+cts <- read.table("../counts/Fureylab_Lupus_20221220.counts.txt", sep = '\t', header = T, row.names = "genes")
+
+### metadata
+coldata <- read.table("../metadata/mona-lupus_colfile.txt", sep = '\t', header = T)
+coldata_original <- coldata
+
+
+# add combined ESRD column for comparing all ESRD samples with other groups
+coldata <- coldata %>%
+  dplyr::mutate(ESRD = case_when(condition == "ESRD" | condition == "Death_ESRD" ~ "All_ESRD",
+                                 condition == "control" ~ "control", 
+                                 condition == "stable_disease" ~ "stable_disease",
+                                 condition == "Death_no_ESRD" ~ "Death_no_ESRD"
+                                 ))
+
+### genome info
+ENSEMBL_org <- keys(org.Hs.eg.db, keytype = "ENSEMBL") # for converting ENSEMBL IDs to gene symbols
+
+hg38_ensembl2gene <- read.table("../metadata/hg38_ensembl2gene.txt",  # for pulling out x&y genes
+                                sep = "\t", header = TRUE)
+
+```
+
+
+Make sure cts and colfile have the same samples
+```{r}
+coldata$group <- as.factor(coldata$group)
+coldata$batch <- as.factor(coldata$batch)
+coldata$Sex <- as.numeric(as.factor(coldata$Sex))
+
+#TIN_threshold <- 40
+
+# replace whitespaces with underscores 
+# and remove outliers
+coldata <- coldata %>%
+  mutate(Sequencing_ID = str_replace_all(Sequencing_ID, "-", "_")) %>%
+  #dplyr::filter(TIN.median >= TIN_threshold) %>% # remove any samples with a low TIN value
+  dplyr::filter(!Sequencing_ID %in% c("C4_019", # C4_019: only 15% of reads maped to human genome
+                                      "C1_147", # C1_147 - outlier on initial PCA & can't make nc PCA plot if this sample is included
+                                      "C3_173", # C3_173 - outlier on initial PCA & can't make nc PCA plot if this sample is included
+                                      "C3_180", # outlier on negative control PCA 
+                                      "C4_026", # outlier on negative control PCA
+                                      "C4_036")) # outlier on negative control PCA
+
+# Only keep samples based on the filtering above
+rownames(coldata) <- coldata$Sequencing_ID
+
+coldata = coldata[ with(coldata, order(rownames(coldata))),]
+cts = cts[, with(cts, order(colnames(cts)))]
+cts = round(cts)
+idx <- intersect(rownames(coldata), colnames(cts))
+coldata <- coldata[idx,]
+cts <- cts[,idx]
+
+
+# THIS MUST RETURN TRUE!
+  assert_that(all(rownames(coldata) == colnames(cts)), 
+              msg = "Colnames matrix doesn't match Cts matrix!")
+  print(all(rownames(coldata) == colnames(cts)))
+
+# Filter out regions with low coverage
+cts <- cts[apply(cts, 1, function(x) length(which(x>=10))/length(x) >0.25),] # reads must have at least 5 reads in at least 25% of samples
+
+```
+
+
+Find X & Y chromosome genes for removing from negative control gene set
+```{r}
+xy_genes <- hg38_ensembl2gene %>% # new data frame with only x and y chromosome genes
+  dplyr::filter(chr == "chrX" | chr == "chrY")
+xy_genes$ensembl <- substr(xy_genes$ensembl, 1, 18) # remove ENSEMBL ID version decimal
+xy_genes$ensembl <- gsub("\\..*","",xy_genes$ensembl) 
+
+row.names(cts) <- substr(row.names(cts), 1, 18) # remove ENSEMBL ID version decimal
+row.names(cts) <- gsub("\\..*","",row.names(cts)) 
+```
+
+**Part 2: initial DESeq analysis without correcting for unwanted variation**
+
+Perform initial DESeq analysis (no correction for unwanted variation)
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = cts, colData = coldata, design = ~ Sex + group) 
+dds$group <- relevel(dds$group, ref = "control")
+dds <- estimateSizeFactors(dds)
+dds <- estimateDispersions(dds)
+dds <- nbinomLRT(dds, maxit = 1000, reduced = ~1)
+uncorrected_results <- results(dds)
+nrow(uncorrected_results) # number of DEG before RUV correction
+
+## add gene symbol to uncorrected results
+ens.str <- substr(rownames(uncorrected_results), 1, 18)
+ens.str <- gsub("\\..*","",ens.str) 
+uncorrected_results$symbol <- mapIds(org.Hs.eg.db,
+                           keys=ens.str,
+                           column=c("SYMBOL"),
+                           keytype="ENSEMBL",
+                           multiVals="first")
+
+uncorrected_results_df <- as.data.frame(uncorrected_results)
+
+
+
+padj_uncorrected_results_df <- uncorrected_results_df %>% 
+  dplyr::filter(padj < 0.05)
+nrow(padj_uncorrected_results_df) 
+
+
+# Initial PCA plot of uncorrected data
+vsd <- vst(dds)
+plotPCA(vsd, intgroup="condition") + 
+  scale_color_manual(values=cbPalette) +
+  theme_minimal()
+```
+**Part 3: Correct for unwanted variation using RUVg**
+
+Find negative control genes
+```{r}
+## Use raw P values for negative control genes
+ruv_matrix <- newSeqExpressionSet(counts(dds),phenoData = data.frame(colData(dds),row.names=colnames(counts(dds))))
+nc <- na.omit(uncorrected_results) # remove non-tested genes
+nc <-  nc[nc$pvalue > 0.1, ] # find the genes with raw pval > 0.1
+nc <- ruv_matrix[rownames(ruv_matrix) %in% rownames(nc),]
+nc <- as.data.frame(counts(nc))
+nc <- nc %>%
+  dplyr::filter(!row.names(nc) %in% xy_genes$ensembl)
+
+
+# upper quartile normalization
+pre <- newSeqExpressionSet(as.matrix(nc),phenoData = data.frame(coldata, row.names = row.names(coldata)))
+pre <- betweenLaneNormalization(pre, which="median")
+
+
+## Relative Log Expression (RLE) and PCA of negative controls genes
+EDASeq::plotRLE(pre, outline=FALSE, main = "Control Genes Original RUV RLE plot", col=as.factor(coldata$group))
+EDASeq::plotPCA(pre, intgroup=as.numeric(as.factor(coldata$group)), col=as.numeric(as.factor(coldata$group)), main = "Control Genes Original PCA")
+
+```
+
+
+RUVg - how many k values to include?
+```{r}
+#make empty list to add number of DEGs into
+DEG_list = c()
+
+#run RUVg for different values of k
+#look at RLE for negative control genes
+for (i in 1:5) {
+  ##Run RUV
+  ##k refers to the number of "unwanted factors of variation" (kinda like PCs in PCA), with rows referring to the samples
+  ##and columns to the factors. You can play around with k, but 5 is a good starting number.
+  # set k
+  k <- i
+  set_ruv <- RUVg(pre, rownames(nc), k=k)
+
+  # Create an RLE plot for review
+  plotRLE(set_ruv, outline=FALSE, ylim=c(-1, 1), main = paste("RUV RLE plot by group for k=", k, sep=""), col=as.numeric(as.factor(coldata$group)))
+  plotPCA(set_ruv, intgroup=as.numeric(as.factor(coldata$group)), col=as.numeric(as.factor(coldata$group)), main = paste("PCA plot by group for k=", k, sep=""))
+
+
+# run DESeq
+#Add factors of variation to coldata
+  coldata_new <- pData(set_ruv)
+  ruv_factors2 <- coldata_new %>%
+    select(group, Sex, starts_with('W_')) #select only the RUV factor columns
+
+  ##extract W_ from the dataframe
+  w_<- grep("^W_", colnames(coldata_new), value = TRUE)
+
+  #do DESeq(dds) with the ruv factors in the design
+  dds2 <- DESeqDataSetFromMatrix(countData = cts, colData = coldata_new, design = as.formula(paste("~ Sex + ", paste(w_, collapse = " + "), " + group")))
+  dds2$group <- relevel(dds2$group, ref = "control")
+  dds2 <- estimateSizeFactors(dds2)
+  dds2 <- estimateDispersions(dds2)
+  dds2 <- nbinomLRT(dds2, maxit = 1500, reduced = ~1)
+  comparison_results <- results(dds2)
+
+  #turn results into df
+  comparison_results_df <- as.data.frame(comparison_results)
+
+  #pull out the number of DEG with padj < 0.05
+  DEG_number <- comparison_results_df %>%
+    dplyr::filter(padj < 0.05) %>%
+    nrow()
+
+  print(nrow(comparison_results_df))
+  print(DEG_number)
+
+  #add padj_no to a list
+  DEG_list=append(DEG_list, DEG_number)
+  
+  # Check correlations between RUV factors and metadata variables
+  # making this plot for k=5 will show k vals 1-4 as well, so only do once
+  if (k==5){
+    #Look at RUV factor correlations
+    fuv <- cbind(set_ruv$W_1, set_ruv$W_2, set_ruv$W_3, set_ruv$W_4, set_ruv$W_5)
+    colnames(fuv) = w_
+    fuv = data.frame(fuv)
+    
+    
+    ##Make another matrix with covariates of interest (cbind), and correlate it with RUV factors (cor)
+    RUVMatrix = cor(cbind(as.numeric(as.factor(coldata$condition)), 
+                          as.numeric(as.factor(coldata$group)), 
+                          as.numeric(as.factor(coldata$Sex)),
+                          coldata$TIN.median,
+                          as.numeric(as.factor(coldata$batch))),
+                    fuv, use = "complete.obs", method = "pearson")
+    
+    rownames(RUVMatrix) = #add names to rows based on your covariates of interest
+      c("condition","Disease Group","Sex", "TIN_med", "batch")
+    
+    #Make correlation plot (corrplot R package)
+    corrplot(RUVMatrix) 
+    
+    png(paste("../results/", today, "/RUV_k_", k, "_correlationplot.png", sep=""))
+    corrplot(RUVMatrix)
+    dev.off()
+  }
+
+}
+
+#plot list of p_adj values (number on y, kvalue on x)
+png(paste("../results/", today, "/k_padj_DEG2.png", sep=""))
+plot(DEG_list,
+     xlab= "k value",
+     ylab = "Number of Significant Padj DEGs",
+     main = "k vs. Number of Significant P-adjusted DEGs")
+dev.off()
+```
+
+
+**Part 4: Finalize correction using RUVg and visualize on PCA**
+
+After deciding on number of k values, do the RUV correction and visualize on PCA
+```{r}
+k <- 1
+set_ruv <- RUVg(pre, rownames(nc), k=k) 
+
+# Pull out the phenotype data
+coldata_new<-pData(set_ruv)
+ruv_factors <- coldata_new[,-(1:ncol(coldata))]
+# fwrite(coldata_new, 
+#             file = paste("../results/", today, "/", today,"_Fureylab_Mona-Lupus_coldata-with-RUV-factors_kval", k, ".txt", sep=""), 
+#             quote = FALSE, eol = "\n", sep = "\t", na = "NA")
+
+##extract W_ from the dataframe 
+w_ <- grep("^W_", colnames(coldata_new), value = TRUE)
+
+# Set up new DESeq object to perform differential analyses
+dds_de <- DESeqDataSetFromMatrix(countData=cts,colData=coldata_new,
+                               design = as.formula(paste("~ Sex + ", paste(w_, collapse = " + "), " + group"))) 
+dds_de$group <- relevel(dds_de$group, ref = "control")
+
+vsd = vst(dds_de)
+mm <- model.matrix(~1, colData(vsd))
+
+# Remove batch effects
+assay(vsd) <- removeBatchEffect(assay(vsd), covariates=cbind(ruv_factors, coldata$Sex),design=mm)
+#assay(vsd) <- removeBatchEffect(assay(vsd), covariates=cbind(coldata$TIN.median, coldata$Sex),design=mm)
+
+#fwrite(assay(vsd), file=paste("../results/", today, "/", today,"_Fureylab_Mona-Lupus_vst-matrix_kval", k, ".txt",sep=""), sep="\t", quote=FALSE)
+
+
+# Create a PCA plot 
+plt <- plotPCA(vsd, intgroup=c("condition")) +
+  scale_color_manual(values=cbPalette) +
+  theme_minimal()
+
+plt
+#ggsave(paste("../results/", today, "/", today,"_Fureylab_Mona-Lupus_PCA_kval", k,".png",sep=""), plt, dpi = 300)
+
+plt2 <- plotPCA(vsd, intgroup=c("tissue")) +
+  scale_color_manual(values="black") +
+  theme_minimal()
+
+plt2
+#ggsave(file = paste("../results/", today, "/", today,"_NO-COLORS_Fureylab_Mona-Lupus_PCA_kval", k,".png",sep=""), plt2, dpi = 300)
+
+
+```
+```{r}
+library(ggExtra)
+pcdata <- plotPCA(vsd, intgroup=c("group"), returnData = TRUE)
+
+pcdata
+
+percentVar <- round(100 * attr(pcdata, "percentVar"), 1)
+
+# bw pca
+pca_bw <- ggplot(pcdata, aes(x = PC1, y = PC2)) +
+  geom_point(size = 5) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  theme_linedraw() 
+pca_bw
+
+ggsave("lupus_PCA_black-white.png", pca_bw, 
+       dpi = 300, units = "in", height = 6, width = 8)
+
+pca_bw_marg <- ggMarginal(pca_bw)
+pca_bw_marg
+
+# color pca
+pca <- ggplot(pcdata, aes(x = PC1, y = PC2, color = group)) +
+  geom_point(size = 5) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  theme_linedraw() + 
+  scale_color_manual(values=c("#00BFC4", "#F8766D")) 
+
+pca
+
+ggmarginalPCA <- ggMarginal(pca,groupColour = TRUE, groupFill = TRUE)
+ggsave("lupus_PCA_color_marginalhistograms.png", ggmarginalPCA, 
+       dpi = 300, units = "in", height = 6, width = 8)
+
+ggmarginalPCA
+```
+
+
+PCA without control samples
+```{r}
+coldata_LN_pca <- coldata %>%
+  dplyr::filter(condition != "control")
+
+vsd_LN <- vsd
+# subset batch corrected expression data
+vsd_LN <- vsd_LN[,colnames(assay(vsd_LN)) %in% coldata_LN_pca$Sequencing_ID]
+
+plt_LN_only <- plotPCA(vsd_LN, intgroup=c("condition")) +#, ntop=5000) + 
+  scale_color_manual(values=cbPalette[2:5]) +
+  theme_minimal()
+
+plt_LN_only
+ggsave(file = paste("../results/", today, "/", today,"_Lupus_LN-ONLY-PCA_kval", k,".png",sep=""), plt_LN_only, dpi = 300)
+
+
+```
+
+
+Interactive PCA to check which samples are in different parts of the cluster
+```{r}
+pca_data <- plotPCA(vsd, intgroup="group", returnData=TRUE)
+gg_pca <- ggplot(pca_data, aes(x=PC1, y=PC2, label=name)) + 
+   geom_point(aes(color=group))
+
+#ggplotly(gg_pca, tooltip="label")
+```
+
+
+**Part 5 - Differential expression for different contrasts**
+
+DE analysis A: by "group" variable (disease vs control)
+```{r}
+# what are the different levels in this variable?
+#unique(coldata$group)
+# [1] disease control
+group_contrasts <- c("control-disease")
+
+for (CONTRAST in group_contrasts) {
+  # get disease vs reference variable info for the contrast
+  disease <- str_split_i(CONTRAST, "-", i=2)
+  REF <- str_split_i(CONTRAST, "-", i=1)
+
+  #print(paste("REF=", REF))
+  #print(paste("disease=", disease))
+  
+  # keep only coldata and cts data for the contrast of interest
+  coldata_loop <- coldata_new %>%
+    dplyr::filter(group == disease | group == REF)
+  
+  # Only keep samples based on the filtering above
+  rownames(coldata_loop) <- coldata_loop$Sequencing_ID
+  coldata_loop = coldata_loop[ with(coldata_loop, order(rownames(coldata_loop))),]
+  cts_loop = cts[, with(cts, order(colnames(cts)))]
+  cts_loop = round(cts_loop)
+  idx_loop <- intersect(rownames(coldata_loop), colnames(cts_loop))
+  coldata_loop <- coldata_loop[idx_loop,]
+  cts_loop <- cts_loop[,idx_loop]
+
+  # THIS MUST RETURN TRUE!
+  assert_that(all(rownames(coldata_loop) == colnames(cts_loop)), 
+              msg = "Colnames matrix doesn't match Cts matrix!")
+  print(all(rownames(coldata_loop) == colnames(cts_loop)))
+
+
+  ############
+
+  dds_de <- DESeqDataSetFromMatrix(countData = cts_loop, colData = coldata_loop,
+                                   design = as.formula(paste("~ Sex + ", paste(w_, collapse = " + "), " + group")))
+  # dds_de <- DESeqDataSetFromMatrix(countData = cts, colData = coldata_new,
+  #                                  design = ~ Sex + TIN.median + group)
+  dds_de$group <- relevel(dds_de$group, ref = REF)
+  
+  dds_de <- DESeq(dds_de, test = 'Wald')
+  
+  # if using LRT
+  # dds_de <- estimateSizeFactors(dds_de)
+  # dds_de <- estimateDispersions(dds_de)
+  # dds_de <- nbinomLRT(dds_de, maxit = 1500, reduced = ~1)
+  #res <- results(dds_de)
+  
+  res <- results(dds_de, contrast=c("group", disease, REF)) #reference variable last
+  
+  
+  # add gene symbol, add symbol to stat column based on lfc, and print out DESeq results
+  padj_val <- 0.05
+  res_list <- write_full_results(res_obj = res, CONTRAST = CONTRAST, REF = REF, disease = disease, padj_val = padj_val, kval = k)
+  res_df <- res_list[[1]]
+  padj_res_df <- res_list[[2]]
+  
+  # write out enrichr and gsea files
+  write_enrichr_gsea_files(df = res_df, padj_df = padj_res_df, CONTRAST = CONTRAST, REF = REF, disease = disease, padj_val = padj_val, kval = k)
+  
+  # volcano plot
+  volcano <- EnhancedVolcano(res_df,
+                  lab = res_df$symbol,
+                  x = 'log2FoldChange',
+                  y = 'pvalue',
+                  title = paste("DEG: ", REF, "-", disease ,sep=''),
+                  legendPosition = 'bottom',
+                  pCutoff = 0.05) #+
+    #coord_flip()
+  
+  volcano
+  ggsave(paste("../results/", today, "/", CONTRAST, "/", today, "_Fureylab_Mona-Lupus_DESeq_volcano-plot_", REF, "-", disease, ".png",sep=""), volcano, dpi=300)
+  
+
+}  
+
+
+```
+
+
+DE analysis B: by "condition" variable 
+```{r}
+# what are the different levels in this variable?
+#unique(coldata$condition)
+#[1] "ESRD"           "Death_no_ESRD"  "Death_ESRD"     "stable_disease" "control"  
+condition_contrasts <- c("control-stable_disease")
+
+for (CONTRAST in condition_contrasts) {
+  # get disease vs reference variable info for the contrast
+  disease <- str_split_i(CONTRAST, "-", i=2)
+  REF <- str_split_i(CONTRAST, "-", i=1)
+
+  # keep only coldata and cts data for the contrast of interest
+  coldata_loop <- coldata_new %>%
+    dplyr::filter(condition == disease | condition == REF)
+  
+  # Only keep samples based on the filtering above
+  rownames(coldata_loop) <- coldata_loop$Sequencing_ID
+  coldata_loop = coldata_loop[ with(coldata_loop, order(rownames(coldata_loop))),]
+  cts_loop = cts[, with(cts, order(colnames(cts)))]
+  cts_loop = round(cts_loop)
+  idx_loop <- intersect(rownames(coldata_loop), colnames(cts_loop))
+  coldata_loop <- coldata_loop[idx_loop,]
+  cts_loop <- cts_loop[,idx_loop]
+
+  # THIS MUST RETURN TRUE!
+  assert_that(all(rownames(coldata_loop) == colnames(cts_loop)), 
+              msg = "Colnames matrix doesn't match Cts matrix!")
+  print(all(rownames(coldata_loop) == colnames(cts_loop)))
+  
+  ############
+  
+  dds_de <- DESeqDataSetFromMatrix(countData = cts_loop, colData = coldata_loop,
+                                 design = as.formula(paste("~ Sex + ", paste(w_, collapse = " + "), " + condition")))
+  dds_de$condition <- relevel(dds_de$condition, ref = REF)
+  
+  dds_de <- DESeq(dds_de, test = 'Wald')
+  
+  # if using LRT
+  # dds_de <- estimateSizeFactors(dds_de)
+  # dds_de <- estimateDispersions(dds_de)
+  # dds_de <- nbinomLRT(dds_de, maxit = 1500, reduced = ~1)
+  #res <- results(dds_de)
+
+  res <- results(dds_de, contrast=c("condition", disease, REF)) #reference variable last
+  
+  # add gene symbol, add symbol to stat column based on lfc, and print out DESeq results
+  padj_val <- 0.05
+  res_list <- write_full_results(res_obj = res, CONTRAST = CONTRAST, REF = REF, disease = disease, padj_val = padj_val, kval = k)
+  res_df <- res_list[[1]]
+  padj_res_df <- res_list[[2]]
+
+  # write out enrichr and gsea files
+  write_enrichr_gsea_files(df = res_df, padj_df = padj_res_df, CONTRAST = CONTRAST, REF = REF, disease = disease, padj_val = padj_val, kval = k)
+  
+  # volcano plot
+  volcano <- EnhancedVolcano(res_df,
+                  lab = res_df$symbol,
+                  x = 'log2FoldChange',
+                  y = 'pvalue',
+                  title = paste("DEG: ", REF, "-", disease ,sep=''),
+                  legendPosition = 'bottom',
+                  pCutoff = 0.05) #+
+    #coord_flip()
+  
+  volcano
+  ggsave(paste("../results/", today, "/",CONTRAST, "/", today, "_Fureylab_Mona-Lupus_DESeq_volcano-plot_", REF, "-", disease, ".png",sep=""), volcano, dpi=300)
+}
+```
+
+
+
+
+DE analysis C: by "ESRD" variable 
+```{r}
+# what are the different levels in this variable?
+#unique(coldata$ESRD)
+# [1] "All_ESRD"       "Death_no_ESRD"  "stable_disease" "control"       
+
+ESRD_contrasts <- c("control-All_ESRD", "stable_disease-All_ESRD")
+
+for (CONTRAST in ESRD_contrasts) {
+  # get disease vs reference variable info for the contrast
+  disease <- str_split_i(CONTRAST, "-", i=2)
+  REF <- str_split_i(CONTRAST, "-", i=1)
+  
+  # keep only coldata and cts data for the contrast of interest
+  coldata_loop <- coldata_new %>%
+    dplyr::filter(ESRD == disease | ESRD == REF)
+  
+  # Only keep samples based on the filtering above
+  rownames(coldata_loop) <- coldata_loop$Sequencing_ID
+  coldata_loop = coldata_loop[ with(coldata_loop, order(rownames(coldata_loop))),]
+  cts_loop = cts[, with(cts, order(colnames(cts)))]
+  cts_loop = round(cts_loop)
+  idx_loop <- intersect(rownames(coldata_loop), colnames(cts_loop))
+  coldata_loop <- coldata_loop[idx_loop,]
+  cts_loop <- cts_loop[,idx_loop]
+
+  # THIS MUST RETURN TRUE!
+  assert_that(all(rownames(coldata_loop) == colnames(cts_loop)), 
+              msg = "Colnames matrix doesn't match Cts matrix!")
+  print(all(rownames(coldata_loop) == colnames(cts_loop)))
+  
+  ############
+  # run DESeq2
+  dds_de <- DESeqDataSetFromMatrix(countData = cts_loop, colData = coldata_loop,
+                                 design = as.formula(paste("~ Sex + ", paste(w_, collapse = " + "), " + ESRD")))
+  dds_de$ESRD <- relevel(dds_de$ESRD, ref = REF)
+
+  dds_de <- DESeq(dds_de, test = 'Wald')
+  
+  # for LRT:
+  # dds_de <- estimateSizeFactors(dds_de)
+  # dds_de <- estimateDispersions(dds_de)
+  # dds_de <- nbinomLRT(dds_de, maxit = 1500, reduced = ~1)
+  #res <- results(dds_de)
+  
+  res <- results(dds_de, contrast=c("ESRD", disease, REF)) #reference variable last
+
+  # add gene symbol, add symbol to stat column based on lfc, and print out DESeq results
+  padj_val <- 0.05
+  res_list <- write_full_results(res_obj = res, CONTRAST = CONTRAST, REF = REF, disease = disease, padj_val = padj_val, kval = k)
+  res_df <- res_list[[1]]
+  padj_res_df <- res_list[[2]]
+
+  # write out enrichr and gsea files
+  write_enrichr_gsea_files(df = res_df, padj_df = padj_res_df, CONTRAST = CONTRAST, REF = REF, disease = disease, padj_val = padj_val, kval = k)
+
+
+  # volcano plot
+  volcano <- EnhancedVolcano(res_df,
+                  lab = res_df$symbol,
+                  x = 'log2FoldChange',
+                  y = 'pvalue',
+                  title = paste("DEG: ", REF, "-", disease ,sep=''),
+                  legendPosition = 'bottom',
+                  pCutoff = 0.05) #+
+    #coord_flip()
+
+  volcano
+  ggsave(paste("../results/", today, "/",CONTRAST, "/", today, "_Fureylab_Mona-Lupus_DESeq_volcano-plot_", REF, "-", disease, ".png",sep=""), 
+         volcano, dpi=300)
+
+  }
+```
+
+
+
+**Other Plots**
+
+Check for correlation between sclerotic glomeruli and TIN score
+```{r}
+
+lupus <- coldata_original %>%
+  dplyr::filter(!condition == "control")
+
+lupus <- lupus %>%
+  dplyr::select(condition, TIN.median, percent_sclerotic_glomeruli)
+
+
+scl_cor_plot <- ggplot(lupus, aes(x = TIN.median, y = percent_sclerotic_glomeruli)) + 
+  geom_point() + 
+  theme_minimal() + 
+  stat_poly_line() +
+  stat_poly_eq()
+
+scl_cor_plot
+ggsave(paste("../results/", today, "/correlation_sclerotic_glom_TIN.png", sep=""), scl_cor_plot, dpi=300, units="in", width = 8, height = 4)
+
+
+
+## by group
+scl_cor_plot_gr <- ggplot(lupus, aes(x = TIN.median, y = percent_sclerotic_glomeruli, color=condition)) + 
+  geom_point() + 
+  theme_minimal() + 
+  stat_poly_line() +
+  stat_poly_eq() + 
+  facet_wrap(~ condition)
+
+scl_cor_plot_gr
+
+ggsave(paste("../results/", today,"/correlation_sclerotic_glom_TIN_by-group.png", sep=""), scl_cor_plot_gr, dpi=300, units="in", width = 8, height = 4)
+
+```
+
+
+TIN median by condition
+```{r}
+
+tin_plot <- ggplot(coldata_original, aes(x=factor(condition), y=TIN.median, color=condition)) +
+   geom_boxplot(outlier.color=NA) +
+   geom_jitter() +
+   theme_minimal() +
+   labs(title="Lupus FFPE TIN median scores", x="condition", y = "TIN median") +
+   #geom_hline(yintercept=TIN_threshold, linetype="dashed") +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+         legend.position = "none")
+
+tin_plot
+
+ggsave(paste("../results/", today, "/", today,"_TIN-median-scores-by-condition.png", sep=""), tin_plot, dpi=300, units="in", width=4, height=3)
+
+
+### write filtered coldata df to file for visualizing in upset plot notebook
+write.table(coldata, file = paste("../results/", today, "/", today, "_filtered_coldata_table.txt", sep=""), quote = FALSE, eol = "\n", sep = "\t", na = "NA", row.names = F)
+
+```
+
+Sample sizes of each contrast for slides
+```{r}
+coldata_grouped <- coldata %>% 
+  #group_by(condition, Sex) %>%
+  group_by(condition) %>%
+  dplyr::summarise(n = n()) %>%
+  as.data.frame() %>%
+  pivot_wider(names_from = condition, values_from = n)
+
+coldata_grouped
+
+
+con_dis_grouped <- coldata %>%
+  group_by(group) %>%
+  dplyr::summarise(n=n()) %>%
+  as.data.frame() %>%
+  pivot_wider(names_from = group, values_from = n)
+
+con_dis_grouped
+
+esrd_grouped <- coldata %>%
+  group_by(ESRD) %>%
+  dplyr::summarise(n=n()) %>%
+  as.data.frame() %>%
+  pivot_wider(names_from = ESRD, values_from = n)
+
+esrd_grouped
+
+
+# contrast names
+contrast1 = "control-disease"
+contrast2 = "control-stable_disease"
+contrast3 = "control-All_ESRD"
+contrast4 = "stable_disease-All_ESRD"
+
+
+contrast_count <- data.frame(
+  contrast = c(contrast1, contrast2, contrast3, contrast4), 
+  reference = c(coldata_grouped$control, coldata_grouped$control, coldata_grouped$control, coldata_grouped$stable_disease),
+  disease = c(con_dis_grouped$disease, coldata_grouped$stable_disease, esrd_grouped$All_ESRD, esrd_grouped$All_ESRD)
+  )
+
+write.table(contrast_count, file = paste("../results/", today,"/sample_counts_per_contrast.txt", sep=""), quote = FALSE, eol = "\n", sep = "\t", na = "NA", row.names = F)
+```
+
+
+sample size before filtering
+```{r}
+condition_summary <- coldata_original %>%
+  group_by(condition) %>%
+  summarize(n = n())
+
+condition_summary
+```
+
+
+expression heatmap - not a lot of difference among different groups
+```{r}
+
+n_genes <- 1000
+
+top_de_genes <- padj_uncorrected_results_df %>%
+  arrange(padj) %>%
+  slice_head(n=n_genes)
+
+df_mat <- data.matrix(assay(vsd))
+df_mat <- df_mat[rownames(df_mat) %in% rownames(top_de_genes),]
+
+
+replace_ensembl <- hg38_ensembl2gene %>%
+  dplyr::select(ensembl, gene_id)
+
+
+heatmap <- pheatmap(df_mat, 
+         annotation_col = coldata[,'condition', drop=F],
+         # cluster_rows = FALSE,
+         #main = paste("Individual expression of top ", n_genes, " DE genes", sep=""), 
+         cutree_cols = 2,
+         show_rownames = F,
+         legend=T)
+         #annotation_legend =F)
+
+
+#ggsave(paste("../results/", today, "/", today, "_heatmap_using_vst_padj_no-RUV.png", sep=""), heatmap, dpi = 300, units = "in", width = 8, height=4)
+
+```
+
+
+
+
+PCA by batch
+Samples in "U" (unknown) batch set were split across batch 1 and 2
+Samples in group "U" cluster by disease vs control, not by batch, so this is reassuring.
+```{r}
+vst_pca_data <- plotPCA(vsd, intgroup=c("group", "batch"), returnData=TRUE)
+
+gg_batch_pca <- ggplot(vst_pca_data, aes(x=PC1, y=PC2)) +
+  geom_point(aes(color=group, shape=batch), size=3, alpha=0.75) +
+  theme_minimal() +
+  scale_color_manual(values=cbPalette)
+gg_batch_pca
+
+
+ggsave(paste("../results/", today, "/", today, "_Lupus_Batch-effects-PCA_k1.png",sep=""), gg_batch_pca, dpi = 300)
+```
+
+Interactive PCA to identify outliers
+Interactive PCA
+```{r}
+# make interactive PCA to see who the outliers are
+uncor_pca_data <- plotPCA(vsd, intgroup="group", returnData=TRUE)
+gg_pca <- ggplot(uncor_pca_data, aes(x=PC1, y=PC2, label=name)) + 
+   geom_point(aes(color=group))
+
+#ggplotly(gg_pca, tooltip="label")
+
+
+# adding ID as label on hover
+# https://stackoverflow.com/a/36345358
+
+
+# outlier IDs
+# 930526, 935663, 934746, 929618, 930237, 929835, 939417
+```
+
+
+Gene plots
+```{r}
+### get gene counts function
+# takes input: dds object, gene name (as ENSEMBL ID), and the coldata variable
+get_gene_counts <- function(dds_obj, gene, coldata_variable) {
+  # get count data for gene of interest
+  count_data <- plotCounts(dds_obj, gene, coldata_variable, returnData = T)
+
+  # get gene symbol and set as counts column name
+  ens.str <- substr(gene, 1, 18)
+  ens.str <- gsub("\\..*","",ens.str) 
+  
+  symbol <- mapIds(org.Hs.eg.db,
+                       keys=ens.str,
+                       column=c("SYMBOL"),
+                       keytype="ENSEMBL",
+                       multiVals="first")
+  # long format
+  count_data$symbol <- symbol
+  
+  # row names to column and update ID
+  count_data <- setDT(count_data, keep.rownames = "ID")[]
+  
+  return(count_data)
+}
+
+TREM2_counts <- get_gene_counts(dds, "ENSG00000095970", "condition")
+SPP1_counts <- get_gene_counts(dds, "ENSG00000118785", "condition")
+SIGLEC1_counts <- get_gene_counts(dds, "ENSG00000088827", "condition")
+FABP5_counts <- get_gene_counts(dds, "ENSG00000164687", "condition")
+
+
+gene_counts <- rbind(TREM2_counts, SPP1_counts, SIGLEC1_counts, FABP5_counts)
+gene_counts <- gene_counts %>%
+  na.omit()
+
+
+gene_plot <- ggplot(gene_counts, aes( x = forcats::fct_relevel(condition, "control", "stable_disease", "Death_no_ESRD", "ESRD", "Death_ESRD"), 
+                                      y = count, color = condition)) + 
+  geom_point(size=2, show.legend=F) +
+  geom_boxplot(alpha = 0) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  #scale_x_discrete(labels = c("CD", "PFCD")) + 
+  #scale_color_manual(values = c(cbPalette[[2]], cbPalette[[1]])) + 
+  theme(axis.title.x = element_blank(), legend.position = "none") + 
+  facet_wrap(~ symbol, scales = "free")
+
+gene_plot
+```
+

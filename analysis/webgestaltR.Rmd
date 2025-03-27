@@ -1,0 +1,282 @@
+---
+title: "web gestalt R"
+output: html_document
+date: "2025-01-22"
+---
+
+```{r}
+library(tidyverse)
+library(WebGestaltR)
+library(data.table)
+
+```
+Read in data
+```{r}
+
+analysis_date <- "20250310"
+# make output directories
+system2(command = "mkdir", args = 
+          c(paste("../results/", analysis_date, "/gsea/", sep=""),
+            paste("../results/", analysis_date, "/gsea/webgestalt_comparisons/", sep="")))
+output_path <- paste("../results/", analysis_date, "/gsea/webgestalt_comparisons/", sep="")
+
+# get paths for each set of DE results
+ctrl_stable_dis_path <- paste("../results/",
+                       analysis_date,
+                       "/control-stable_disease/gsea/",
+                       analysis_date,
+                       "_Fureylab_Mona-Lupus_DESeq_control-stable_disease_kval1_padj0.05.rnk",
+                       sep="")
+
+ctrl_all_ESRD_path <- paste("../results/",
+                       analysis_date,
+                       "/control-All_ESRD/gsea/",
+                       analysis_date,
+                       "_Fureylab_Mona-Lupus_DESeq_control-All_ESRD_kval1_padj0.05.rnk",
+                       sep="")
+
+ctrl_dis_path <- paste("../results/",
+                       analysis_date,
+                       "/control-disease/gsea/",
+                       analysis_date,
+                       "_Fureylab_Mona-Lupus_DESeq_control-disease_kval1_padj0.05.rnk",
+                       sep="")
+
+stable_disease_all_ESRD_path <- paste("../results/",
+                                      analysis_date,
+                                      "/stable_disease-All_ESRD/gsea/",
+                                      analysis_date,
+                                      "_Fureylab_Mona-Lupus_DESeq_stable_disease-All_ESRD_kval1_padj0.05.rnk",
+                                      sep="")
+
+# read in files
+ctrl_stable_dis_df <- fread(ctrl_stable_dis_path, data.table = F, header = F)
+ctrl_all_ESRD_df <- fread(ctrl_all_ESRD_path, data.table = F, header = F)
+ctrl_dis_df <- fread(ctrl_dis_path, data.table = F, header = F)
+stable_disease_all_ESRD_df <- fread(stable_disease_all_ESRD_path, data.table = F, header = F)
+```
+
+Function
+```{r}
+
+run_wegbestaltr <- function(rnk_df, output_name) {
+  # If enrichMethod is GSEA, interestGene should be an R data.frame object containing two columns: the gene list and the corresponding scores.
+  out_df <- WebGestaltR(enrichMethod = "GSEA", 
+            organism = "hsapiens",
+            enrichDatabase = "pathway_Reactome",
+            interestGene = rnk_df,  # gene_symbol and score in separate columns
+            interestGeneType = "genesymbol",
+            minNum = 10, # default
+            sigMethod = "fdr",
+            fdrThr = 0.05, # default
+            isOutput = T,
+            outputDirectory = paste("../results/", analysis_date, "/gsea", sep=""),
+            useWeightedSetCover = TRUE, # documentation says this is for ORA, not GSEA, but might lower redundancy
+            setCoverNum = 20, # default - reduce redundancy of results
+            projectName = output_name)
+  
+  return(out_df)
+  
+}
+
+
+```
+
+
+
+Run webgestaltR
+```{r}
+gsea_ctrl_stable_dis <- run_wegbestaltr(ctrl_stable_dis_df, "control-stable_disease-gsea")
+gsea_ctrl_all_ESRD <- run_wegbestaltr(ctrl_all_ESRD_df, "control-all_ESRD-gsea")
+gsea_ctrl_dis <- run_wegbestaltr(ctrl_dis_df, "control-disease-gsea")
+gsea_stable_disease_all_ESRD <- run_wegbestaltr(stable_disease_all_ESRD_df, "stable_disease-all_ESRD-gsea")
+```
+
+Combine webgestalt results into one dataframe
+```{r}
+gsea_ctrl_stable_dis["contrast"] = "ctrl_stable-dis"
+gsea_ctrl_all_ESRD["contrast"] = "ctrl_all-ESRD"
+gsea_ctrl_dis["contrast"] = "ctrl_dis"
+gsea_stable_disease_all_ESRD["contrast"] = "stable-dis_all-ESRD"
+
+
+all_gsea_df <- rbind(gsea_ctrl_stable_dis, gsea_ctrl_all_ESRD, gsea_ctrl_dis, gsea_stable_disease_all_ESRD)
+
+# write file the first time, or read in file already generated:
+# fwrite(all_gsea_df, file = paste("../results/", analysis_date, "/gsea/all_gsea_df.txt", sep=""),
+#        row.names = F, col.names = T, sep = "\t")
+# 
+all_gsea_df <- fread(paste("../results/", analysis_date, "/gsea/all_gsea_df.txt", sep=""),
+                     sep = "\t", data.table = F, header = T)
+
+
+
+
+```
+
+
+
+Read in the top sets: weighted set cover files output by WebGestaltR()
+```{r}
+gsea_path <-  paste("../results/", analysis_date, "/gsea/", sep="")
+top_sets_ctrl_all_ESRD <- fread(paste(gsea_path, 
+                                      "/Project_control_all_ESRD_gsea/",
+                                      "enriched_geneset_wsc_topsets_control_all_ESRD_gsea.txt", 
+                                      sep=""), 
+                                data.table = F)
+
+top_sets_ctrl_dis <- fread(paste(gsea_path, 
+                                "/Project_control_disease_gsea/", 
+                                "enriched_geneset_wsc_topsets_control_disease_gsea.txt",
+                                sep=""), 
+                          data.table = F)
+
+top_sets_ctrl_stable_disease <- fread(paste(gsea_path,
+                                            "/Project_control_stable_disease_gsea/",
+                                            "enriched_geneset_wsc_topsets_control_stable_disease_gsea.txt",
+                                            sep=""),
+                                      data.table = F)
+
+top_sets_stable_disease_all_ESRD <- fread(paste(gsea_path, 
+                                                "/Project_stable_disease_all_ESRD_gsea/",
+                                                "enriched_geneset_wsc_topsets_stable_disease_all_ESRD_gsea.txt",
+                                                sep=""), 
+                                          data.table = F)
+
+
+```
+
+
+Shared vs unique top sets for different contrasts
+```{r}
+# combine into one df
+top_sets_ctrl_all_ESRD <- top_sets_ctrl_all_ESRD %>% 
+  dplyr::rename(top_sets = names(top_sets_ctrl_all_ESRD)[1])
+top_sets_ctrl_all_ESRD_wsc <- all_gsea_df %>%
+  dplyr::filter(geneSet %in% top_sets_ctrl_all_ESRD$top_sets) %>%
+  dplyr::filter(contrast == "ctrl_all-ESRD")
+
+
+top_sets_ctrl_dis <- top_sets_ctrl_dis %>% 
+  dplyr::rename(top_sets = names(top_sets_ctrl_dis)[1])
+top_sets_ctrl_dis_wsc <- all_gsea_df %>%
+  dplyr::filter(geneSet %in% top_sets_ctrl_dis$top_sets) %>%
+  dplyr::filter(contrast == "ctrl_dis")
+
+top_sets_ctrl_stable_disease <- top_sets_ctrl_stable_disease %>% dplyr::rename(top_sets = names(top_sets_ctrl_stable_disease)[1])
+top_sets_ctrl_stable_disease_wsc <- all_gsea_df %>%
+  dplyr::filter(geneSet %in% top_sets_ctrl_stable_disease$top_sets) %>%
+  dplyr::filter(contrast == "ctrl_stable-dis")
+
+top_sets_stable_disease_all_ESRD <- top_sets_stable_disease_all_ESRD %>% dplyr::rename(top_sets = names(top_sets_stable_disease_all_ESRD)[1])
+top_sets_stable_disease_all_ESRD_wsc <- all_gsea_df %>%
+  dplyr::filter(geneSet %in% top_sets_stable_disease_all_ESRD$top_sets) %>%
+  dplyr::filter(contrast == "stable-dis_all-ESRD")
+
+all_gsea_wsc_df <- rbind(top_sets_ctrl_all_ESRD_wsc, 
+                  top_sets_ctrl_dis_wsc, 
+                  top_sets_ctrl_stable_disease_wsc, 
+                  top_sets_stable_disease_all_ESRD_wsc)
+
+# write out file for upset plots
+fwrite(all_gsea_wsc_df, file = paste("../results/", analysis_date, "/gsea/all_gsea_weighted-set-cover_df.txt", sep=""),
+       row.names = F, col.names = T, sep = "\t")
+
+
+uniq_top_sets <- all_gsea_wsc_df %>%
+  dplyr::group_by(geneSet) %>%
+  dplyr::summarize(n = n()) %>%
+  dplyr::filter(n == 1)
+
+
+
+top_sets_plot <- ggplot(all_gsea_wsc_df, aes(x = geneSet, y = normalizedEnrichmentScore, fill = contrast)) + 
+  geom_col(position = position_dodge2()) + 
+  theme_minimal() +
+  geom_hline(yintercept=0) +
+  facet_wrap(~ description, scales = "free_x")
+  #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) 
+
+top_sets_plot
+
+
+ggsave(paste(output_path, analysis_date, "_all_contrasts_gsea_barchart.png" , sep=""), top_sets_plot, 
+       dpi = 300, units = "in", width = 14, height = 8, bg = 'white')
+
+```
+
+
+Grouped top sets
+```{r}
+# categorize by shared plot type (see the facet wrap plot above)
+wsc_sets_summary <- all_gsea_wsc_df %>%
+  group_by(geneSet) %>%
+  dplyr::mutate(count = n()) %>%
+  dplyr::mutate(type = case_when(
+    count == 1  ~ contrast,
+    (count == 2 | count == 3) & contrast != "stable-dis_all-ESRD" ~ "ctrl-v-disease",
+    #(count == 2 | count == 3) & contrast == "stable-dis_all-ESRD" ~ "all", 
+    count == 4 ~ "all"
+  ))
+
+# separate out dataframes
+wsc_sets_summary$abbrev_description <- stringr::str_trunc(wsc_sets_summary$description, width = 25, side = "right") 
+
+# add positive or negative direction
+wsc_sets_summary <- wsc_sets_summary %>%
+  dplyr::mutate(description_direction = case_when(
+    normalizedEnrichmentScore > 0 ~ paste(abbrev_description, "pos", sep = "_"),
+    normalizedEnrichmentScore < 0 ~ paste(abbrev_description, "neg", sep = "_")
+  ))
+##########
+
+pathways_all_contrasts <- wsc_sets_summary %>%
+  dplyr::filter(type == "all")
+
+all_contrasts_plot <- ggplot(pathways_all_contrasts, aes(x = geneSet, y = normalizedEnrichmentScore, fill = contrast)) + 
+  geom_col(position = position_dodge2()) + 
+  theme_minimal() +
+  geom_hline(yintercept=0) #+ 
+  #labs(title = "all")
+
+all_contrasts_plot +
+  facet_wrap(~ description, scales = "free_x") 
+
+##########
+pathways_ctrl_dis_constrasts <- wsc_sets_summary %>%
+  dplyr::filter(type == "ctrl-v-disease")
+
+ctrl_dis_plot <- ggplot(pathways_ctrl_dis_constrasts, aes(x = geneSet, y = normalizedEnrichmentScore, fill = contrast)) + 
+  geom_col(position = position_dodge2()) + 
+  theme_minimal() +
+  geom_hline(yintercept=0) +
+  labs(title = "control vs disease")
+
+ctrl_dis_plot +
+  facet_wrap(~ abbrev_description, scales = "free_x")
+
+##########
+pathways_ESRD_only <- wsc_sets_summary %>%
+  dplyr::filter(type == "stable-dis_all-ESRD")
+
+ESRD_only_plot <- ggplot(pathways_ESRD_only, aes(x = geneSet, y = normalizedEnrichmentScore, fill = contrast)) + 
+  geom_col(position = position_dodge2()) + 
+  theme_minimal() +
+  geom_hline(yintercept=0) + 
+  labs(title = "stable disease vs ESRD") +
+  scale_fill_manual(values = c("#C77CFF")) #+ 
+  #theme(legend.position = "none")
+
+ESRD_only_plot +
+  facet_wrap(~ description, scales = "free_x")
+
+
+stable_dis_all_ESRD_topsets_df <- all_gsea_wsc_df %>% 
+  dplyr::filter(geneSet %in% top_sets_stable_disease_all_ESRD$top_sets) %>% 
+  dplyr::filter(contrast == "stable-dis_all-ESRD")
+
+
+```
+
+
+

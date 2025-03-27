@@ -1,0 +1,399 @@
+---
+title: "Mona Lupus upset plots"
+output: html_document
+date: "20250310"
+---
+
+
+```{r}
+suppressMessages(library(tidyverse))
+suppressMessages(library(gdata))
+suppressMessages(library(cowplot))
+suppressMessages(library(ggplotify))
+suppressMessages(library(forcats))
+suppressMessages(library(data.table))
+suppressMessages(library(ComplexUpset))
+#suppressMessages(library(UpSetR))
+```
+
+
+First, make upset plots for the significantly differentially expressed genes in each contrast
+```{r}
+
+# contrast names
+contrast1 = "control-stable_disease"
+contrast2 = "control-disease"
+contrast3 = "control-All_ESRD"
+contrast4 = "stable_disease-All_ESRD"
+
+
+# paths
+analysis_date <- "20250310"
+
+# paths to DE results (use only significantly differentially expressed genes for upset plots)
+path1 = paste("../results/", analysis_date, "/",contrast1, "/", analysis_date, 
+                                      "_Fureylab_Mona-Lupus_DESeq_SIGIFICANT_results_", contrast1,  
+                                      "_padj0.05_kval1.txt",sep="")
+path2 = paste("../results/", analysis_date, "/",contrast2, "/", analysis_date, 
+                                      "_Fureylab_Mona-Lupus_DESeq_SIGIFICANT_results_", contrast2,  
+                                      "_padj0.05_kval1.txt",sep="")
+path3 = paste("../results/", analysis_date, "/",contrast3, "/", analysis_date, 
+                                      "_Fureylab_Mona-Lupus_DESeq_SIGIFICANT_results_", contrast3,  
+                                      "_padj0.05_kval1.txt",sep="")
+path4 = paste("../results/", analysis_date, "/",contrast4, "/", analysis_date, 
+                                      "_Fureylab_Mona-Lupus_DESeq_SIGIFICANT_results_", contrast4,  
+                                      "_padj0.05_kval1.txt",sep="")
+
+
+
+## ENTER DESIRED SIGNIFICANT log2fold change VALUE, default = 2
+sig_logFC <- 0 #0.58 # (log2fc of 0.58 = fold change of 1.5)
+
+## ENTER NAME OF LOGFC COLUMN - default = logFC
+logfc_col <- c("log2FoldChange")
+
+## ENTER NAME OF TRANSCRIPT COLUMN - default = GeneID
+transcript_col <- c("symbol")
+
+
+```
+
+Read in data
+```{r}
+de1 = fread(path1, data.table = F, header = T)
+de2 = fread(path2, data.table = F, header = T)
+de3 = fread(path3, data.table = F, header = T)
+de4 = fread(path4, data.table = F, header = T)
+
+```
+
+
+
+Functions
+```{r}
+# this function takes 2 arguments, the first is the df,
+# the second is how you want to modify the symbol column
+# to keep lncRNAs with no gene symbol, use option = "replace"
+# to drop rows with missing gene symbols, use option = "remove"
+modify_symbol_na <- function(de, option){
+  if (option == "replace") {
+      de_df <- de %>%
+        dplyr::mutate(symbol = case_when(!is.na(de$symbol) ~ de$symbol,
+                                     is.na(de$symbol) ~ de$ENSEMBL))
+      return(de_df)
+      
+  } else if (option == "remove") {
+    de_df <- de %>%
+    drop_na(symbol)
+    return(de_df)
+  }
+}
+
+
+get_directional_genes <- function(de_table, contrast, direction) {
+  if (direction == "up"){
+    # filter
+    de_table <- de_table %>%
+      dplyr::filter(log2FoldChange > sig_logFC)
+    # add label
+    de_table["contrast"] = contrast
+    # keep only relevant columns
+    de_table <- de_table %>%
+      dplyr::select(contrast, symbol)
+    # return data frame
+    return(de_table)
+    ############
+    ############
+    } else if (direction == "down") { ############
+    # filter
+    de_table <- de_table %>%
+      dplyr::filter(log2FoldChange < -sig_logFC)
+    # add label
+    de_table["contrast"] = contrast
+    # keep only relevant columns
+    de_table <- de_table %>%
+      dplyr::select(contrast, symbol)
+    
+    # return data frame
+    return(de_table)
+  }
+}
+
+```
+
+clean up data frames for upset plots
+```{r}
+# this function takes 2 arguments, the df and how you want to modify the symbol column
+# to keep lncRNAs with no gene symbol, option = "replace"
+# to drop rows with missing gene symbols, option = "remove"
+de1 <- modify_symbol_na(de1, "replace")
+de2 <- modify_symbol_na(de2, "replace")
+de3 <- modify_symbol_na(de3, "replace")
+de4 <- modify_symbol_na(de4, "replace")
+
+
+# remove special characters in gene names
+de1 <- de1 %>%
+  mutate(across(symbol, ~gsub("[[:punct:]]", "", .x)))
+de2 <- de2 %>%
+  mutate(across(symbol, ~gsub("[[:punct:]]", "", .x)))
+de3 <- de3 %>%
+  mutate(across(symbol, ~gsub("[[:punct:]]", "", .x)))
+de4 <- de4 %>%
+  mutate(across(symbol, ~gsub("[[:punct:]]", "", .x)))
+
+```
+
+
+
+Reformat DE tables to include only contrast and gene name (by up vs downregulated gene sets - above or below the logfc threshold set earlier)
+```{r}
+de1_up <- get_directional_genes(de1, contrast1, "up")
+de1_down <- get_directional_genes(de1, contrast1, "down")
+
+de2_up <- get_directional_genes(de2, contrast2, "up")
+de2_down <- get_directional_genes(de2, contrast2, "down")
+
+de3_up <- get_directional_genes(de3, contrast3, "up")
+de3_down <- get_directional_genes(de3, contrast3, "down")
+
+de4_up <- get_directional_genes(de4, contrast4, "up")
+de4_down <- get_directional_genes(de4, contrast4, "down")
+
+
+all_up <- rbind(de1_up, de2_up, de3_up, de4_up)
+all_down <- rbind(de1_down, de2_down, de3_down, de4_down)
+
+all_up <- all_up
+all_up["LFC"] = "upregulated"
+
+all_down <- all_down
+all_down["LFC"] <- "downregulated"
+
+# reformat contrast names for use in Upset plots
+all_up <- all_up %>%
+  mutate(across(contrast, ~gsub("-", ":", .x)))
+all_down <- all_down %>%
+  mutate(across(contrast, ~gsub("-", ":", .x)))
+
+# combine into one df
+all_df <- rbind(all_up, all_down)
+```
+
+Upset plot using Complex Upset package
+Prepare data
+```{r}
+# prepare data for complex upset
+DEG_df_wide <- all_df 
+DEG_df_wide["gene"] = 1
+
+# some genes seem to be duplicated within contrasts, but all are upregulated, so just keep the first instance
+dups <- DEG_df_wide %>% group_by(contrast, symbol, LFC) %>% summarize(n = n()) %>% filter(n > 1)
+
+#The duplicated() will tell you if a value has been seen before, but it returns FALSE the first 
+# time it sees a value (it's not duplicated yet) and then TRUE every subsequent time it sees 
+# that value. In order not to get rid of values that have only one row, we also keep values 
+# where the total row count n() per group is 1.
+# https://stackoverflow.com/a/29739947/10176950
+DEG_df_wide <- DEG_df_wide %>%
+  group_by(contrast, symbol, LFC) %>% 
+  filter(duplicated(symbol) | n()==1)
+
+DEG_df_wide <- DEG_df_wide %>%
+  pivot_wider(names_from = contrast, values_from = gene, values_fill = 0) 
+# mutate(name = fct_reorder(name, val)) 
+
+contrast = colnames(DEG_df_wide)[3:6] # get column names of contrasts
+
+DEG_df_wide[contrast] = DEG_df_wide[contrast] == 1
+```
+
+
+Make upset plot
+```{r}
+complex_upset <- ComplexUpset::upset(DEG_df_wide, 
+      contrast,
+      width_ratio=0.3,
+      base_annotations=list(
+        'Intersection size'=intersection_size(
+            counts=F,
+            mapping=aes(fill=LFC)) + # forcats::fct_relevel(LFC, "positive", "negative")
+          scale_fill_manual(values=c( 
+            'downregulated'='#E41A1C', 'upregulated'='#377EB8'))
+        ),
+      set_sizes=(
+        upset_set_size(position = 'right')
+        + geom_text(aes(label=..count..), hjust=-.3, stat='count')
+    ), #+
+    #expand_limits(y=20000),
+    # moves legends over the set sizes
+    guides='over'
+      )
+
+
+complex_upset
+```
+
+Upregulated only
+```{r}
+# prepare data for complex heatmap
+up_df_wide <- all_up
+up_df_wide["gene"] = 1
+
+# some genes seem to be duplicated within contrasts, but all are upregulated, so just keep the first instance
+dups <- up_df_wide %>% group_by(contrast, symbol) %>% summarize(n = n()) %>% filter(n > 1)
+
+#The duplicated() will tell you if a value has been seen before, but it returns FALSE the first 
+# time it sees a value (it's not duplicated yet) and then TRUE every subsequent time it sees 
+# that value. In order not to get rid of values that have only one row, we also keep values 
+# where the total row count n() per group is 1.
+# https://stackoverflow.com/a/29739947/10176950
+up_df_wide <- up_df_wide %>%
+  group_by(contrast, symbol ) %>% 
+  filter(duplicated(symbol) | n()==1)
+
+up_df_wide <- up_df_wide %>%
+  pivot_wider(names_from = contrast, values_from = gene, values_fill = 0) 
+# mutate(name = fct_reorder(name, val)) 
+
+contrast = colnames(up_df_wide)[3:6] # get column names of contrasts
+
+up_df_wide[contrast] = up_df_wide[contrast] == 1
+
+
+complex_upset_upregulated <- ComplexUpset::upset(up_df_wide, 
+      contrast,
+      width_ratio=0.3,
+      base_annotations=list(
+        'Intersection size'=intersection_size(
+            counts=T,
+            mapping=aes(fill=LFC)) + # forcats::fct_relevel(LFC, "positive", "negative")
+          scale_fill_manual(values=c( 
+            'upregulated'='#377EB8'))
+        ),
+      set_sizes=(
+        upset_set_size(position = 'right')
+        + geom_text(aes(label=..count..), hjust=-.3, stat='count')
+    ), #+
+    #expand_limits(y=20000),
+    # moves legends over the set sizes
+    guides='over'
+      )
+
+
+complex_upset_upregulated
+```
+
+```{r}
+# prepare data for complex heatmap
+down_df_wide <- all_down
+down_df_wide["gene"] = 1
+
+# some genes seem to be duplicated within contrasts, but all are downregulated, so just keep the first instance
+dups <- down_df_wide %>% group_by(contrast, symbol) %>% summarize(n = n()) %>% filter(n > 1)
+
+#The duplicated() will tell you if a value has been seen before, but it returns FALSE the first 
+# time it sees a value (it's not duplicated yet) and then TRUE every subsequent time it sees 
+# that value. In order not to get rid of values that have only one row, we also keep values 
+# where the total row count n() per group is 1.
+# https://stackoverflow.com/a/29739947/10176950
+down_df_wide <- down_df_wide %>%
+  group_by(contrast, symbol ) %>% 
+  filter(duplicated(symbol) | n()==1)
+
+down_df_wide <- down_df_wide %>%
+  pivot_wider(names_from = contrast, values_from = gene, values_fill = 0) 
+# mutate(name = fct_reorder(name, val)) 
+
+contrast = colnames(down_df_wide)[3:6] # get column names of contrasts
+
+down_df_wide[contrast] = down_df_wide[contrast] == 1
+
+
+complex_upset_downregulated <- ComplexUpset::upset(down_df_wide, 
+      contrast,
+      width_ratio=0.3,
+      base_annotations=list(
+        'Intersection size'=intersection_size(
+            counts=T,
+            mapping=aes(fill=LFC)) + # forcats::fct_relevel(LFC, "positive", "negative")
+          scale_fill_manual(values=c( 
+            'downregulated'='#E41A1C'))
+        ),
+      set_sizes=(
+        upset_set_size(position = 'right')
+        + geom_text(aes(label=..count..), hjust=-.3, stat='count')
+    ), #+
+    #expand_limits(y=20000),
+    # moves legends over the set sizes
+    guides='over'
+      )
+
+
+complex_upset_downregulated
+```
+
+
+Which genes are unique to ESRD?
+ComplexUpset package makes this easy. See:
+https://krassowski.github.io/complex-upset/articles/Examples_R.html#region-selection-modes
+https://github.com/krassowski/complex-upset/issues/125#issuecomment-884138054
+```{r}
+ESRD_exclusive <- ComplexUpset::upset_data(DEG_df_wide, contrast)$with_sizes %>%
+  filter(intersection == "stable_disease:All_ESRD" & in_exclusive_intersection)
+```
+
+
+
+
+Second, make upset plots of which pathways are shared
+Prepare data
+```{r}
+all_gsea_wsc_df <- fread(paste("../results/", analysis_date, "/gsea/all_gsea_weighted-set-cover_df.txt", sep=""),
+                         data.table = F, header = T)
+# change contrast names to match punctuation in earlier upset plots
+all_gsea_wsc_df <- all_gsea_wsc_df %>%
+  mutate(across(contrast, ~gsub("_", ":", .x)),
+         across(contrast, ~gsub("-", "_", .x)))
+
+# keep only relevant columns
+all_gsea_wsc_df_all_columns <- all_gsea_wsc_df
+all_gsea_wsc_df <- all_gsea_wsc_df %>%
+  dplyr::select(geneSet, description, contrast)
+
+# prepare data for complex heatmap
+gsea_wsc_df_wide <- all_gsea_wsc_df 
+gsea_wsc_df_wide["pathway"] = 1
+gsea_wsc_df_wide <- gsea_wsc_df_wide %>%
+  pivot_wider(names_from = contrast, values_from = pathway, values_fill = 0) 
+# mutate(name = fct_reorder(name, val)) 
+
+contrast2 = colnames(gsea_wsc_df_wide)[3:6] 
+
+gsea_wsc_df_wide[contrast2] = gsea_wsc_df_wide[contrast2] == 1
+```
+
+
+
+GSEA upset
+```{r}
+
+gsea_upset <- ComplexUpset::upset(gsea_wsc_df_wide, 
+      contrast2,
+      width_ratio=0.3
+)
+
+
+gsea_upset
+
+```
+
+Get intersection members
+```{r}
+ESRD_pathways <- ComplexUpset::upset_data(gsea_wsc_df_wide, contrast2)$with_sizes %>%
+  filter(intersection == "stable_dis:all_ESRD" & in_exclusive_intersection)
+
+top_LN_pathways <- ComplexUpset::upset_data(gsea_wsc_df_wide, contrast2)$with_sizes %>%
+  filter(intersection == "ctrl:all_ESRD-ctrl:dis-ctrl:stable_dis-stable_dis:all_ESRD" & in_inclusive_intersection)
+```
+
